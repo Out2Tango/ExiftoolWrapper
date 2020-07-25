@@ -10,10 +10,14 @@ using System.Linq;
 
 namespace Brain2CPU.ExifTool
 {
+    enum ExifUpdateFunction { Replace, Append }        // Where append is only appropriate for lists, like keywords
+
+
     public struct ExifToolResponse
     {
         public bool IsSuccess { get; }
         public string Result { get; }
+
 
         public ExifToolResponse(string r)
         {
@@ -21,15 +25,19 @@ namespace Brain2CPU.ExifTool
             Result = r;
         }
 
+
         public ExifToolResponse(bool b, string r)
         {
             IsSuccess = b;
             Result = r;
         }
 
+
         //to use ExifToolResponse directly in if (discarding response)
         public static implicit operator bool(ExifToolResponse r) => r.IsSuccess;
     }
+
+
 
     public sealed class ExifToolWrapper : IDisposable
     {
@@ -53,6 +61,7 @@ namespace Brain2CPU.ExifTool
         //ViaFile: for every command an argument file is created, it works for files with accented characters but it is slower
         public enum CommunicationMethod { Auto, Direct, ViaFile }
         public CommunicationMethod Method { get; set; } = CommunicationMethod.Auto;
+
 
         public bool Resurrect { get; set; } = true;
 
@@ -174,6 +183,7 @@ namespace Brain2CPU.ExifTool
             Status = ExeStatus.Ready;
         }
 
+
         //detect if process was killed
         private void ProcExited(object sender, EventArgs e)
         {
@@ -185,6 +195,7 @@ namespace Brain2CPU.ExifTool
 
             Status = ExeStatus.Stopped;
 
+            
             _waitHandle.Set();
 
             if(!_stopRequested && Resurrect)
@@ -209,9 +220,9 @@ namespace Brain2CPU.ExifTool
                 {
                     try
                     {
-                        _proc.Kill();
-                        _proc.WaitForExit((int)(1000 * SecondsToWaitForStop / 2));
-                        _proc.Dispose();
+                        if (_proc != null) _proc.Kill();
+                        if (_proc != null) _proc.WaitForExit((int)(1000 * SecondsToWaitForStop / 2));
+                        if (_proc != null) _proc.Dispose();
                     }
                     catch(Exception xcp)
                     {
@@ -234,7 +245,22 @@ namespace Brain2CPU.ExifTool
             //string b = Encoding.UTF8.GetString(ba);
             //proc.StandardInput.Write("-charset\nfilename=UTF8\n{0}\n-execute{1}\n", args.Length == 0 ? b : string.Format(b, args), cmdCnt);
 
-            _proc.StandardInput.Write("{0}\n-execute{1}\n", args.Length == 0 ? cmd : string.Format(cmd, args), _cmdCnt);
+
+            string UserArgsString = "";
+            int a = 0;
+            while (a < args.Length)
+                UserArgsString += args[a++] + "\n";
+
+            //exeString += string.Format("{0}\n-execute0\n", cmd);
+
+            //string sTest = String.Format("-s\n{0}\n-execute{1}\n", args.Length == 0 ? cmd : string.Format(cmd, args), _cmdCnt);
+            string FullArgsString = String.Format("{0}{1}\n-execute{2}\n", args.Length == 0 ? "" : UserArgsString, string.Format(cmd, args), _cmdCnt);
+
+            _proc.StandardInput.Write(FullArgsString);
+            //_proc.StandardInput.Write(string.Format(exeString));
+
+            //_proc.StandardInput.Write(exeString);
+            //_proc.StandardInput.Write("{0}\n-execute{1}\n", args.Length == 0 ? cmd : string.Format(cmd, args), _cmdCnt);
             _waitHandle.WaitOne();
         }
         
@@ -303,8 +329,10 @@ namespace Brain2CPU.ExifTool
             return resp;
         }
 
+
         public ExifToolResponse SetExifInto(string path, string key, string val, bool overwriteOriginal = true) =>
             SetExifInto(path, new Dictionary<string, string> {[key] = val}, overwriteOriginal);
+
 
         public ExifToolResponse SetExifInto(string path, Dictionary<string, string> data, bool overwriteOriginal = true)
         {
@@ -327,6 +355,68 @@ namespace Brain2CPU.ExifTool
             return cmdRes ? new ExifToolResponse(cmdRes.Result) : cmdRes;
         }
 
+
+        public ExifToolResponse SetExifInto_AddToList(string path, string ListTag, string data, bool overwriteOriginal = true)
+        {
+            if (!File.Exists(path))
+                return new ExifToolResponse(false, $"'{path}' not found");
+
+            var cmd = new StringBuilder();
+            //foreach (KeyValuePair<string, string> kv in data)
+            //{
+            //cmd.AppendFormat("-{0}={1}\n", kv.Key, kv.Value);
+            cmd.AppendFormat("-{0}+={1}\n", ListTag, data);
+            //}
+
+            if (overwriteOriginal)
+                cmd.Append("-overwrite_original\n");
+
+            cmd.Append(path);
+            var cmdRes = SendCommand(cmd.ToString());
+
+            //if failed return as it is, if it's success must check the response
+            return cmdRes ? new ExifToolResponse(cmdRes.Result) : cmdRes;
+        }
+
+
+        public Dictionary<string, string> FetchExifFrom(string path, List<string> args)
+        {
+            var res = new Dictionary<string, string>();     // default return value - empty dictionary
+
+            if (!File.Exists(path))
+                return res;
+
+            //var tagsTable = tagsToKeep?.ToDictionary(x => x, x => 1);
+            //bool filter = tagsTable != null && tagsTable.Count > 0;
+
+            object[] CommandArgs = new object[args.Count];
+            //CommandArgs[0] = "-s";
+            int argNum = 0;
+            foreach (string arg in args)
+                CommandArgs[argNum++] = arg;
+
+            var cmdRes = SendCommand(path, CommandArgs);
+            if (!cmdRes)
+                return res;
+
+            foreach (string s in cmdRes.Result.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] kv = s.Split('\t');
+                Debug.Assert(kv.Length == 2, $"Can not parse line :'{s}'");
+
+                if (kv.Length != 2) // || (!keepKeysWithEmptyValues && string.IsNullOrEmpty(kv[1])))
+                    continue;
+
+                //if (filter && !tagsTable.ContainsKey(kv[0]))
+                //    continue;
+
+                res[kv[0]] = kv[1];
+            }
+
+            return res;
+        }
+
+
         public Dictionary<string, string> FetchExifFrom(string path, IEnumerable<string> tagsToKeep = null, bool keepKeysWithEmptyValues = true)
         {
             var res = new Dictionary<string, string>();
@@ -336,7 +426,12 @@ namespace Brain2CPU.ExifTool
 
             var tagsTable = tagsToKeep?.ToDictionary(x => x, x => 1);
             bool filter = tagsTable != null && tagsTable.Count > 0;
-            var cmdRes = SendCommand(path);
+
+            object[] args = new object[1];
+            args[0] = "-s";
+
+
+            var cmdRes = SendCommand(path, args);
             if(!cmdRes)
                 return res;
 
@@ -356,6 +451,7 @@ namespace Brain2CPU.ExifTool
 
             return res;
         }
+
 
         public List<string> FetchExifToListFrom(string path, IEnumerable<string> tagsToKeep = null, bool keepKeysWithEmptyValues = true, string separator = ": ")
         {
@@ -387,25 +483,30 @@ namespace Brain2CPU.ExifTool
             return res;
         }
 
-        public ExifToolResponse CloneExif(string source, string dest, bool backup = false)
-        {
-            if(!File.Exists(source) || !File.Exists(dest))
-                return new ExifToolResponse(false, $"'{source}' or '{dest}' not found");
+/* NOT USED
 
-            var cmdRes = SendCommand("{0}-tagsFromFile\n{1}\n{2}", backup ? "" : "-overwrite_original\n", source, dest);
+                public ExifToolResponse ClearExif(string path, bool backup = false)
+                {
+                    if(!File.Exists(path))
+                        return new ExifToolResponse(false, $"'{path}' not found");
 
-            return cmdRes ? new ExifToolResponse(cmdRes.Result) : cmdRes;
-        }
+                    var cmdRes = SendCommand("{0}-all=\n{1}", backup ? "" : "-overwrite_original\n", path);
 
-        public ExifToolResponse ClearExif(string path, bool backup = false)
-        {
-            if(!File.Exists(path))
-                return new ExifToolResponse(false, $"'{path}' not found");
+                    return cmdRes ? new ExifToolResponse(cmdRes.Result) : cmdRes;
+                }
 
-            var cmdRes = SendCommand("{0}-all=\n{1}", backup ? "" : "-overwrite_original\n", path);
+                public ExifToolResponse CloneExif(string source, string dest, bool backup = false)
+                {
+                    if(!File.Exists(source) || !File.Exists(dest))
+                        return new ExifToolResponse(false, $"'{source}' or '{dest}' not found");
 
-            return cmdRes ? new ExifToolResponse(cmdRes.Result) : cmdRes;
-        }
+                    var cmdRes = SendCommand("{0}-tagsFromFile\n{1}\n{2}", backup ? "" : "-overwrite_original\n", source, dest);
+
+                    return cmdRes ? new ExifToolResponse(cmdRes.Result) : cmdRes;
+                }
+
+*/
+
 
         public DateTime? GetCreationTime(string path)
         {
@@ -462,6 +563,8 @@ namespace Brain2CPU.ExifTool
 
         public ExifToolResponse SetOrientationDeg(string path, int ori, bool overwriteOriginal = true) =>
             SetOrientation(path, OrientationDeg2Pos(ori), overwriteOriginal);
+
+
 
         #region Static orientation helpers
 
